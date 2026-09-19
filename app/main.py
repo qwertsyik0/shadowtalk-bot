@@ -10,7 +10,7 @@ from typing import Any, TypeVar
 from fastapi import FastAPI, Header, HTTPException, Request, Response, status
 from sqlalchemy import text
 from telegram import Update
-from telegram.error import NetworkError, RetryAfter, TelegramError, TimedOut
+from telegram.error import NetworkError, RetryAfter, TimedOut
 
 from app.bot import build_application
 from app.config import get_settings
@@ -19,10 +19,45 @@ from app.database import Database
 
 settings = get_settings()
 
-logging.basicConfig(
-    level=getattr(logging, settings.log_level.upper(), logging.INFO),
-    format="%(asctime)s %(levelname)s %(name)s %(message)s",
-)
+
+class SecretRedactingFormatter(logging.Formatter):
+    """Redact runtime secrets from every formatted log line, including tracebacks."""
+
+    def __init__(self, fmt: str, secrets_to_redact: tuple[str, ...]) -> None:
+        super().__init__(fmt)
+        self._secrets = tuple(secret for secret in secrets_to_redact if secret)
+
+    def format(self, record: logging.LogRecord) -> str:
+        rendered = super().format(record)
+        for secret_value in self._secrets:
+            rendered = rendered.replace(secret_value, "[REDACTED]")
+        return rendered
+
+
+def _configure_logging() -> None:
+    formatter = SecretRedactingFormatter(
+        "%(asctime)s %(levelname)s %(name)s %(message)s",
+        (
+            settings.bot_token.get_secret_value(),
+            settings.database_url,
+            settings.webhook_secret.get_secret_value(),
+        ),
+    )
+    handler = logging.StreamHandler()
+    handler.setFormatter(formatter)
+
+    root = logging.getLogger()
+    root.handlers.clear()
+    root.addHandler(handler)
+    root.setLevel(getattr(logging, settings.log_level.upper(), logging.INFO))
+
+    # httpx logs full request URLs at INFO. Telegram Bot API URLs contain the
+    # bot token, so never allow those request lines in production logs.
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
+
+
+_configure_logging()
 logger = logging.getLogger(__name__)
 
 db = Database(settings)
@@ -106,9 +141,7 @@ async def lifespan(_: FastAPI):
 
         yield
     finally:
-        # Do not delete the webhook here. Render free services can be suspended or
-        # restarted at any time, and Telegram must retain the webhook so the next
-        # update can wake the service back up.
+        # Keep the webhook registered across Render free-tier suspends/restarts.
         if started:
             await telegram_app.stop()
         if initialized:
