@@ -8,7 +8,6 @@ from typing import Any
 from fastapi import FastAPI, Header, HTTPException, Request, Response, status
 from sqlalchemy import text
 from telegram import Update
-from telegram.error import TelegramError
 
 from app.bot import build_application
 from app.config import get_settings
@@ -49,10 +48,9 @@ async def lifespan(_: FastAPI):
     try:
         yield
     finally:
-        try:
-            await telegram_app.bot.delete_webhook(drop_pending_updates=False)
-        except TelegramError:
-            logger.exception("Failed to delete Telegram webhook during shutdown")
+        # Do not delete the webhook here. Render free services can be suspended or
+        # restarted at any time, and Telegram must retain the webhook so the next
+        # update can wake the service back up.
         await telegram_app.stop()
         await telegram_app.shutdown()
         await db.dispose()
