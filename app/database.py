@@ -23,6 +23,7 @@ class Database:
             pool_size=5,
             max_overflow=5,
             pool_recycle=900,
+            connect_args={"ssl": "require"},
         )
         self._session_factory = async_sessionmaker(
             self.engine,
