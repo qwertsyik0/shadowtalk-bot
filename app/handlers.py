@@ -394,21 +394,31 @@ class BotHandlers:
             f"статус: {submission.status}",
         ]
 
+        owner_header_markup: InlineKeyboardMarkup | None = None
+
         # Only the owner sees who sent the take. Other moderators receive the same
         # anonymous moderation card without any author-identifying data.
         if moderator_id == self.settings.owner_id:
+            sender_name, sender_url = await self._owner_sender_identity(
+                context=context,
+                author_id=submission.author_id,
+            )
             header_lines.append(
-                "отправитель: "
-                + await self._owner_sender_mention_html(
-                    context=context,
-                    author_id=submission.author_id,
-                )
+                f'отправитель: <a href="{escape(sender_url, quote=True)}">'
+                f"{escape(sender_name)}</a>"
+            )
+            # Some Telegram clients don't make tg://user?id links tappable when they
+            # are embedded in message text. The owner-only button is the reliable
+            # fallback and opens the same user profile directly.
+            owner_header_markup = InlineKeyboardMarkup(
+                [[InlineKeyboardButton(sender_name, url=sender_url)]]
             )
 
         await context.bot.send_message(
             moderator_id,
             "\n".join(header_lines),
             parse_mode="HTML",
+            reply_markup=owner_header_markup,
         )
 
         markup: InlineKeyboardMarkup | None = None
@@ -684,17 +694,19 @@ class BotHandlers:
             else None,
         )
 
-    async def _owner_sender_mention_html(
+    async def _owner_sender_identity(
         self,
         *,
         context: ContextTypes.DEFAULT_TYPE,
         author_id: int,
-    ) -> str:
-        """Build a safe clickable Telegram mention visible only to the owner."""
+    ) -> tuple[str, str]:
+        """Resolve a display name and the most reliable profile URL for the owner."""
         if author_id <= 0:
             raise ValueError("author_id must be a positive Telegram user ID")
 
         display_name = "Пользователь"
+        profile_url = f"tg://user?id={author_id}"
+
         try:
             author_chat = await context.bot.get_chat(author_id)
             first_name = (getattr(author_chat, "first_name", None) or "").strip()
@@ -706,13 +718,18 @@ class BotHandlers:
                 display_name = full_name
             elif username:
                 display_name = f"@{username}"
+
+            # Public t.me links are more consistently clickable across Telegram
+            # clients. Users without a username fall back to a direct tg:// mention.
+            if username:
+                profile_url = f"https://t.me/{username}"
         except TelegramError:
             logger.warning(
-                "Could not resolve sender display name author_id=%s; using fallback mention",
+                "Could not resolve sender profile author_id=%s; using direct ID link",
                 author_id,
             )
 
-        return f'<a href="tg://user?id={author_id}">{escape(display_name)}</a>'
+        return display_name, profile_url
 
     async def _get_or_create_user_session(
         self,
