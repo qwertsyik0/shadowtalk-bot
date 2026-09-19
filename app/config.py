@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from functools import lru_cache
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -79,12 +80,22 @@ class Settings(BaseSettings):
 
     @property
     def sqlalchemy_database_url(self) -> str:
+        """Return an asyncpg-compatible URL, stripping libpq-only query arguments."""
         url = self.database_url
         if url.startswith("postgres://"):
-            return "postgresql+asyncpg://" + url.removeprefix("postgres://")
-        if url.startswith("postgresql://"):
-            return "postgresql+asyncpg://" + url.removeprefix("postgresql://")
-        return url
+            url = "postgresql+asyncpg://" + url.removeprefix("postgres://")
+        elif url.startswith("postgresql://"):
+            url = "postgresql+asyncpg://" + url.removeprefix("postgresql://")
+
+        parts = urlsplit(url)
+        filtered = [
+            (key, value)
+            for key, value in parse_qsl(parts.query, keep_blank_values=True)
+            if key not in {"channel_binding", "sslmode"}
+        ]
+        return urlunsplit(
+            (parts.scheme, parts.netloc, parts.path, urlencode(filtered), parts.fragment)
+        )
 
     @property
     def public_base_url(self) -> str:
