@@ -1,0 +1,1 @@
+"""ShadowTalk autotaker package."""
