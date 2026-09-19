@@ -11,6 +11,10 @@ ContentType = Literal["text", "photo", "video", "animation", "document", "audio"
 TEXT_LIMIT_UTF16 = 4096
 CAPTION_LIMIT_UTF16 = 1024
 
+TAKE_SEPARATOR = "➤"
+TAKE_HASHTAG = "#тейк"
+TAKE_CTA_TEXT = "отправить тейк"
+
 GENRES: dict[str, tuple[str, str]] = {
     "spam": ("Спам", "#спам"),
     "invite": ("Инвайт", "#инвайт"),
@@ -133,6 +137,13 @@ def validate_genre(genre: str) -> str:
     return genre
 
 
+def _bot_public_username(bot: Bot) -> str:
+    username = (bot.username or "shadowtalkCF_bot").lstrip("@").strip()
+    if not username:
+        raise RuntimeError("Telegram bot username is unavailable")
+    return username
+
+
 def _render_text_and_entities(
     *,
     genre: str,
@@ -142,23 +153,79 @@ def _render_text_and_entities(
     is_caption: bool,
 ) -> tuple[str, list[MessageEntity] | None]:
     validate_genre(genre)
-    hashtag = GENRES[genre][1]
-    prefix = f"{hashtag}\n\n"
+
+    genre_hashtag = GENRES[genre][1]
+    header = f"{genre_hashtag} {TAKE_SEPARATOR} {TAKE_HASHTAG}"
+    prefix = f"{header}\n\n"
+
     body = text or ""
-    rendered = prefix + body
+
+    bot_username = _bot_public_username(bot)
+    footer_line = f"{TAKE_CTA_TEXT} {TAKE_SEPARATOR} @{bot_username}"
+    footer = f"\n\n{footer_line}"
+
+    rendered = prefix + body + footer
 
     limit = CAPTION_LIMIT_UTF16 if is_caption else TEXT_LIMIT_UTF16
     current_len = utf16_len(rendered)
     if current_len > limit:
         overflow = current_len - limit
         raise ValueError(
-            f"Тейк слишком длинный после добавления хештега. Сократи его минимум на "
-            f"{overflow} UTF-16 символ(а/ов)."
+            "Тейк слишком длинный с учётом оформления. "
+            f"Сократи его минимум на {overflow} UTF-16 символ(а/ов)."
         )
 
-    entities = deserialize_entities(raw_entities, bot)
-    shifted = _shift_entities(entities, utf16_len(prefix))
-    return rendered, shifted
+    entities: list[MessageEntity] = []
+
+    # Header hashtags remain native Telegram hashtags and are independently clickable.
+    entities.append(
+        MessageEntity(
+            type=MessageEntity.HASHTAG,
+            offset=0,
+            length=utf16_len(genre_hashtag),
+        )
+    )
+    take_hashtag_offset = utf16_len(f"{genre_hashtag} {TAKE_SEPARATOR} ")
+    entities.append(
+        MessageEntity(
+            type=MessageEntity.HASHTAG,
+            offset=take_hashtag_offset,
+            length=utf16_len(TAKE_HASHTAG),
+        )
+    )
+
+    # Preserve every entity from the user's original message with UTF-16-safe offsets.
+    original_entities = deserialize_entities(raw_entities, bot)
+    shifted_original = _shift_entities(original_entities, utf16_len(prefix))
+    if shifted_original:
+        entities.extend(shifted_original)
+
+    footer_start = utf16_len(prefix + body + "\n\n")
+    footer_length = utf16_len(footer_line)
+
+    # Quote the CTA as a separate visual footer.
+    entities.append(
+        MessageEntity(
+            type=MessageEntity.BLOCKQUOTE,
+            offset=footer_start,
+            length=footer_length,
+        )
+    )
+
+    username_label = f"@{bot_username}"
+    username_offset = footer_start + utf16_len(
+        f"{TAKE_CTA_TEXT} {TAKE_SEPARATOR} "
+    )
+    entities.append(
+        MessageEntity(
+            type=MessageEntity.TEXT_LINK,
+            offset=username_offset,
+            length=utf16_len(username_label),
+            url=f"https://t.me/{bot_username}",
+        )
+    )
+
+    return rendered, entities
 
 
 async def send_rendered_content(
