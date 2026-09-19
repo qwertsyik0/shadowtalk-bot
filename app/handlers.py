@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from html import escape
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -341,7 +342,7 @@ class BotHandlers:
 
         await context.bot.send_message(
             user_id,
-            f"Тейк #{submission_id} отправлен на модерацию.",
+            "Тейк отправлен на модерацию.",
         )
 
         async with self.db.session() as session:
@@ -386,13 +387,28 @@ class BotHandlers:
 
         genre = GENRES.get(submission.genre, (submission.genre, f"#{submission.genre}"))[1]
         prefix = "Очередь" if queue_view else "Новый тейк"
+
+        header_lines = [
+            prefix,
+            f"жанр: {genre}",
+            f"статус: {submission.status}",
+        ]
+
+        # Only the owner sees who sent the take. Other moderators receive the same
+        # anonymous moderation card without any author-identifying data.
+        if moderator_id == self.settings.owner_id:
+            header_lines.append(
+                "отправитель: "
+                + await self._owner_sender_mention_html(
+                    context=context,
+                    author_id=submission.author_id,
+                )
+            )
+
         await context.bot.send_message(
             moderator_id,
-            (
-                f"{prefix} #{submission.id}\n"
-                f"жанр: {genre}\n"
-                f"статус: {submission.status}"
-            ),
+            "\n".join(header_lines),
+            parse_mode="HTML",
         )
 
         markup: InlineKeyboardMarkup | None = None
@@ -493,11 +509,11 @@ class BotHandlers:
             current.internal_error = None
             await session.commit()
 
-        await context.bot.send_message(moderator_id, f"Тейк #{submission_id} опубликован.")
+        await context.bot.send_message(moderator_id, "Тейк опубликован.")
         try:
             await context.bot.send_message(
                 submission.author_id,
-                f"Твой тейк #{submission_id} опубликован.",
+                "Твой тейк опубликован.",
             )
         except Forbidden:
             logger.info(
@@ -533,7 +549,7 @@ class BotHandlers:
         await context.bot.send_message(
             moderator_id,
             (
-                f"Пришли причину отклонения тейка #{submission_id}. "
+                "Пришли причину отклонения тейка. "
                 "Причина обязательна и будет отправлена автору."
             ),
             reply_markup=InlineKeyboardMarkup(
@@ -615,11 +631,11 @@ class BotHandlers:
             author_id = submission.author_id
             await session.commit()
 
-        await context.bot.send_message(moderator_id, f"Тейк #{submission_id} отклонён.")
+        await context.bot.send_message(moderator_id, "Тейк отклонён.")
         try:
             await context.bot.send_message(
                 author_id,
-                f"Тейк #{submission_id} отклонён.\n\nПричина: {reason}",
+                f"Тейк отклонён.\n\nПричина: {reason}",
             )
         except Forbidden:
             logger.info(
@@ -667,6 +683,36 @@ class BotHandlers:
             if context.error
             else None,
         )
+
+    async def _owner_sender_mention_html(
+        self,
+        *,
+        context: ContextTypes.DEFAULT_TYPE,
+        author_id: int,
+    ) -> str:
+        """Build a safe clickable Telegram mention visible only to the owner."""
+        if author_id <= 0:
+            raise ValueError("author_id must be a positive Telegram user ID")
+
+        display_name = "Пользователь"
+        try:
+            author_chat = await context.bot.get_chat(author_id)
+            first_name = (getattr(author_chat, "first_name", None) or "").strip()
+            last_name = (getattr(author_chat, "last_name", None) or "").strip()
+            username = (getattr(author_chat, "username", None) or "").strip()
+
+            full_name = " ".join(part for part in (first_name, last_name) if part).strip()
+            if full_name:
+                display_name = full_name
+            elif username:
+                display_name = f"@{username}"
+        except TelegramError:
+            logger.warning(
+                "Could not resolve sender display name author_id=%s; using fallback mention",
+                author_id,
+            )
+
+        return f'<a href="tg://user?id={author_id}">{escape(display_name)}</a>'
 
     async def _get_or_create_user_session(
         self,
